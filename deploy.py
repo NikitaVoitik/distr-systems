@@ -3,6 +3,7 @@ import uuid
 import boto3
 import time
 import argparse
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -63,11 +64,18 @@ class EC2Manager:
         print("Created security group:", group_name)
         return security_group.id
 
-    def launch_instance(self, key_name, security_group_id, ami_id):
+    def launch_instance(self, key_name, security_group_id, ami_id, custom_ami=False):
         with open('main.py', 'r') as f:
             app_code = f.read()
 
-        user_data = f"""#!/bin/bash
+        if custom_ami:
+            user_data = f"""#!/bin/bash
+cd /home/ec2-user/app
+
+uvicorn main:app --host 0.0.0.0 --port 80
+"""
+        else:
+            user_data = f"""#!/bin/bash
 yum update -y
 yum install -y python3-pip
 pip3 install fastapi uvicorn httpx
@@ -97,15 +105,29 @@ uvicorn main:app --host 0.0.0.0 --port 80
 
         instance.wait_until_running()
         instance.reload()
+        running_time = time.time()
 
-        end_time = time.time()
-        startup_time = end_time - start_time
+        app_ready_time = self.wait_for_app_ready(instance.public_ip_address)
 
-        print(f"Instance {instance.id} is running at {instance.public_dns_name}")
-        print(f"EC2 instance startup time: {startup_time:.2f} seconds")
+        print(f"Instance {instance.id} is running at {instance.public_ip_address}")
+        print(f"Time to running state: {running_time - start_time:.2f} seconds")
+        print(f"Time to app ready: {app_ready_time - start_time:.2f} seconds")
 
         return instance
 
+    def wait_for_app_ready(self, host, timeout=300):
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            try:
+                response = requests.get(f"http://{host}/shifts", timeout=5)
+                if response.status_code == 200:
+                    return time.time()
+            except:
+                pass
+            time.sleep(1)
+
+        return time.time()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -126,9 +148,11 @@ def main():
 
     ec2_manager = EC2Manager()
     ami_id = None
+    custom_ami = False
 
     if args.linux_custom:
         ami_id = args.linux_custom
+        custom_ami = True
     elif args.linux_base:
         try:
             ami_id = ec2_manager._get_latest_ami_id(args.linux_base)
@@ -142,7 +166,7 @@ def main():
 
     key_pair = ec2_manager.create_key()
     security_group_id = ec2_manager.create_security_group()
-    ec2_manager.launch_instance(key_pair.name, security_group_id, ami_id)
+    ec2_manager.launch_instance(key_pair.name, security_group_id, ami_id, custom_ami=custom_ami)
 
 
 if __name__ == '__main__':
