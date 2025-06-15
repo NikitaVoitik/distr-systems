@@ -10,15 +10,7 @@ app = FastAPI()
 
 @app.get("/shifts")
 def read_root():
-    url = "http://localhost:8181/shifts"
-    try:
-        response = httpx.get(url)
-        response.raise_for_status()
-        return response.json()
-    except httpx.RequestError as exc:
-        return {"error": f"An error occurred while requesting {url}: {exc}"}
-    except httpx.HTTPStatusError as exc:
-        return {"error": f"HTTP error occurred: {exc.response.status_code} - {exc.response.text}"}
+    return {"message": "Shifts endpoint is working!"}
 
 
 class ClientShiftVm(BaseModel):
