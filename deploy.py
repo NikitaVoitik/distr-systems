@@ -10,9 +10,14 @@ load_dotenv()
 
 
 class EC2Manager:
-    def __init__(self, region_name='us-west-2'):
-        self.ec2 = boto3.resource('ec2', region_name=region_name)
-        self.ssm_client = boto3.client('ssm', region_name=region_name)
+    def __init__(self, region='us-west-3'):
+        if region:
+            self.ec2 = boto3.resource('ec2', region_name=region)
+            self.ssm_client = boto3.client('ssm', region_name=region)
+        else:
+            self.ec2 = boto3.resource('ec2')
+            self.ssm_client = boto3.client('ssm')
+        self.region = region
 
     def _get_latest_ami_id(self, base_os='amazon-linux'):
         if base_os == 'amazon-linux':
@@ -145,9 +150,15 @@ def main():
         help='The custom AMI ID to use for the EC2 instance.'
     )
 
+    parser.add_argument(
+        '--region',
+        type=str,
+        help='The AWS region to use (e.g., us-east-1, eu-west-1). If not specified, the default region from your AWS configuration will be used.'
+    )
+
     args = parser.parse_args()
 
-    ec2_manager = EC2Manager()
+    ec2_manager = EC2Manager(region=args.region)
     ami_id = None
     custom_ami = False
 
@@ -164,6 +175,9 @@ def main():
     if not ami_id:
         print("Could not determine the AMI ID. Exiting.")
         return
+
+    region_msg = f"Using AWS region: {ec2_manager.region}" if ec2_manager.region else "Using default AWS region"
+    print(region_msg)
 
     key_pair = ec2_manager.create_key()
     security_group_id = ec2_manager.create_security_group()
