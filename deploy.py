@@ -129,6 +129,7 @@ uvicorn main:app --host 0.0.0.0 --port 80
 
         return time.time()
 
+
 def main():
     parser = argparse.ArgumentParser()
     ami_group = parser.add_mutually_exclusive_group(required=True)
