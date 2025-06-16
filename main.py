@@ -1,9 +1,13 @@
 import asyncio
+import uuid
 from typing import List
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from database import ShiftsRequest, get_db, Shift, SessionLocal
 
 app = FastAPI()
 
@@ -25,50 +29,74 @@ class ClientShiftsVm(BaseModel):
     shifts: List[ClientShiftVm]
 
 
-async def modify_shift(shift: ClientShiftVm):
-    async with httpx.AsyncClient(base_url="http://127.0.0.1:8181") as client:
-        while True:
-            response = await client.post(
-                "/shift",
-                json=shift.dict()
-            )
-            if response.status_code == 200:
-                return response
-            await asyncio.sleep(0.1)
+async def modify_shift(shift: ClientShiftVm, request_id: str, db: Session):
+    shift_record = Shift(
+        shift_id=str(uuid.uuid4()),
+        request_id=request_id,
+        company_id=shift.companyId,
+        user_id=shift.userId,
+        start_time=shift.startTime,
+        end_time=shift.endTime,
+        action=shift.action,
+        status="pending"
+    )
+    db.add(shift_record)
+    db.commit()
+
+    try:
+        async with httpx.AsyncClient(base_url="http://127.0.0.1:8181") as client:
+            while True:
+                response = await client.post(
+                    "/shift",
+                    json=shift.dict()
+                )
+                if response.status_code == 200:
+                    shift_record.status = "success"
+                    db.commit()
+                    return response
+                await asyncio.sleep(1)
+    except Exception as e:
+        shift_record.status = "failed"
+        db.commit()
+        raise e
 
 
-# Here I decided to implement a version that I think would be more suitable for the real environment
-async def modify_shift_not_reliable(shift: ClientShiftVm):
-    i = 0
-    response = None
-    async with httpx.AsyncClient(base_url="http://127.0.0.1:8181") as client:
-        while i < 5:
-            i+= 1
-            response = await client.post(
-                "/shift",
-                json=shift.dict()
-            )
-            if response.status_code == 200:
-                return response
-            await asyncio.sleep(0.2 * i)
-        return response
+async def process_shifts_background(tasks, request_id, db):
+    await asyncio.gather(*tasks)
+
+    request = db.query(ShiftsRequest).filter(ShiftsRequest.id == request_id).first()
+    successful_count = db.query(Shift).filter(Shift.request_id == request_id, Shift.status == "success").count()
+    all_count = db.query(Shift).filter(Shift.request_id == request_id).count()
+    if request:
+        request.status = "success" if successful_count == all_count else "failed"
+        db.commit()
 
 
 @app.post("/clientshifts")
-async def modify_shifts(shifts_vm: ClientShiftsVm):
-    print(shifts_vm)
-    tasks = [modify_shift(shift) for shift in shifts_vm.shifts]
-    responses = await asyncio.gather(*tasks)
+async def modify_shifts(shifts_vm: ClientShiftsVm, db: Session = Depends(get_db)):
+    request_id = str(uuid.uuid4())
 
-    success_count = sum(1 for r in responses if r.status_code == 200)
-    return {"ok": True, "successful_posts": success_count}
+    new_request = ShiftsRequest(
+        id=request_id,
+        status="pending"
+    )
+    db.add(new_request)
+    db.commit()
 
 
-@app.post("/clientshiftsprod")
-async def modify_shifts_prod(shifts_vm: ClientShiftsVm):
-    print(shifts_vm)
-    tasks = [modify_shift_not_reliable(shift) for shift in shifts_vm.shifts]
-    responses = await asyncio.gather(*tasks)
+    tasks = [modify_shift(shift, request_id, SessionLocal()) for shift in shifts_vm.shifts]
+    asyncio.create_task(process_shifts_background(tasks, request_id, SessionLocal()))
 
-    success_count = sum(1 for r in responses if r.status_code == 200)
-    return {"ok": True, "successful_posts": success_count}
+    return {
+        "request_id": request_id,
+        "status": "pending",
+        "successful_posts": 0
+    }
+
+@app.get("/status/{request_id}")
+def get_request_status(request_id: str, db: Session = Depends(get_db)):
+    request = db.query(ShiftsRequest).filter(ShiftsRequest.id == request_id).first()
+    successful_count = db.query(Shift).filter(Shift.request_id == request_id, Shift.status == "success").count()
+    if request:
+        return {"request_id": request.id, "status": request.status, "successful_posts": successful_count}
+    return {"error": "Request not found"}, 404
